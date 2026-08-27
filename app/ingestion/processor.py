@@ -1,0 +1,157 @@
+import os
+import sys
+import uuid
+import json
+import logfire
+
+from qdrant_client import QdrantClient
+from qdrant_client.http import models
+
+from app.config import settings
+from app.services.retrieval.embeddings import embed_texts, get_embedding_dim
+from app.ingestion.loaders.pdf import parse_pdf
+from app.ingestion.loaders.html import parse_html
+from app.ingestion.loaders.text import parse_text
+from app.ingestion.chunking.splitter import chunk_text
+
+import logfire
+
+PROCESSED_DATA_DIR = "processed_data"
+
+#Initialize Quadrant client
+qdrant_client = QdrantClient(
+    url=settings.QDRANT_URL,
+    api_key=settings.QDRANT_API_KEY
+)
+
+def save_processed_locally(data: dict,source_type: str, filename: str) -> str:
+    """Save parsered chunk metadata locally as JSON in processed_data/<source_type>/."""
+    folder=os.path.join(PROCESSED_DATA_DIR, source_type)
+    os.makedirs(folder, exist_ok=True)
+    filepath = os.path.join(folder, f"{filename}.json")
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    logfire.info(f"Processed data saved locally at {filepath}.")
+    return filepath
+
+def process_file(file_path: str,filename: str ,source_type: str):
+    """Parse, chunk, save locally, embed, index in Qdrant."""
+    with logfire.span("Processing File", file=filename, source=source_type):
+        try:
+            ext=filename.lower().split('.',1)[-1]
+            if ext == 'pdf':
+                full_text = parse_pdf(file_path)
+            elif ext == 'html' or ext == 'htm':
+                full_text = parse_html(file_path)
+            elif ext == 'txt':
+                full_text = parse_text(file_path)
+            elif ext == 'docx':
+                from app.ingestion.loaders.office import parse_office
+                full_text = parse_office(file_path)
+            else:
+                logfire.warning(f"Unsupported file type: {ext}. Skipping {filename}.")
+                return
+
+            if not full_text or full_text.strip() == "":
+                logfire.warning(f"No text extracted from {filename}. Skipping.")
+                return
+
+            #chunk text
+            chunks = chunk_text(full_text)
+            if not chunks:
+                logfire.warning(f"No chunks created from {filename}. Skipping.")
+                return
+
+            # Save processed metadata locally
+            processed_data = {
+                "filename": filename,
+                "source_type": source_type,
+                "chunks": chunks
+            }
+
+            local_path = save_processed_locally(processed_data, source_type, filename)
+            logfire.info(f"Processed data for {filename} saved locally at {local_path}.")
+
+            # Embed and index in Qdrant
+            with logfire.span("Vectorizing & Indexing"):
+                embeddings = embed_texts(chunks)
+                points = [
+                    models.PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector=embedding,
+                        payload={"text": chunk, "source": source_type, "source_type": source_type},
+                    )
+                    for chunk, embedding in zip[tuple](chunks, embeddings)
+                ]
+
+                qdrant_client.upsert(
+                    collection_name=settings.QDRANT_COLLECTION_NAME,
+                    points=points
+                )
+                logfire.info(f"Indexed {len(points)} chunks from {filename} into Qdrant collection '{settings.QDRANT_COLLECTION_NAME}'.")
+        except Exception as e:
+            logfire.error(f"Error processing {filename}: {e}")
+
+def process_directory(directory_path: str, source_type: str):
+    """Process all files in a directory."""
+    with logfire.span("Scanning Directory", path=directory_path, source=source_type):
+        files = [f for f in os.listdir(directory_path) if os.path.isfile(os.path.join(directory_path, f))]
+        logfire.info(f"Found {len(files)} files in {directory_path}.")
+        for filename in files:
+            process_file(os.path.join(directory_path, filename), filename, source_type)
+
+def run_universal_ingestion(base_dir: str, explicit_source_type: str = None, wipe: bool = False):
+    """
+    Scan base_dir, map sub-folders to source types, and ingest all documents.
+    Pass --wipe to drop and recreate the Qdrant collection before ingestion.
+    """
+    with logfire.span("Universal Ingestion Started", base_directory=base_dir):
+
+        # Wipe collection if requested
+        if wipe:
+            with logfire.span("Wiping Collection"):
+                if qdrant_client.collection_exists(settings.QDRANT_COLLECTION):
+                    qdrant_client.delete_collection(settings.QDRANT_COLLECTION)
+                    logfire.info(f"Collection '{settings.QDRANT_COLLECTION}' deleted.")
+
+        # Recreate collection — dimension resolved at runtime after embedding model probe
+        if not qdrant_client.collection_exists(settings.QDRANT_COLLECTION):
+            dim = get_embedding_dim()
+            qdrant_client.create_collection(
+                collection_name=settings.QDRANT_COLLECTION,
+                vectors_config=models.VectorParams(
+                    size=dim,
+                    distance=models.Distance.COSINE,
+                ),
+            )
+            logfire.info(
+                f"Created collection '{settings.QDRANT_COLLECTION}' "
+                f"({dim}-dim, Cosine)."
+            )
+
+        # Route to sub-folders or treat the whole dir as one source
+        subdirs = [
+            d for d in os.listdir(base_dir)
+            if os.path.isdir(os.path.join(base_dir, d))
+        ]
+
+        if not subdirs:
+            if explicit_source_type:
+                source_type = explicit_source_type
+            else:
+                base_name = os.path.basename(os.path.normpath(base_dir)).lower()
+                source_type = (
+                    "true" if "true" in base_name
+                    else "noisy" if "noisy" in base_name
+                    else "general"
+                )
+            logfire.info(f"No sub-folders found — processing '{base_dir}' as '{source_type}'.")
+            process_directory(base_dir, source_type)
+        else:
+            for subdir in subdirs:
+                source_type = (
+                    "true" if "true" in subdir.lower()
+                    else "noisy" if "noisy" in subdir.lower()
+                    else subdir
+                )
+                process_directory(os.path.join(base_dir, subdir), source_type)
