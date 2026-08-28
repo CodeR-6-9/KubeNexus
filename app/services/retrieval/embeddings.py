@@ -1,7 +1,7 @@
 import time
 import logfire
 
-from langchain_google_genai import GoogleGeminiAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from app.config import settings
 
 BATCH_SIZE = 50
@@ -14,7 +14,7 @@ model_type: str | None = None
 def probe_gemini():
     """Probe Gemini model to see if it is available and working."""
     try:
-        model=GoogleGeminiAIEmbeddings(
+        model=GoogleGenerativeAIEmbeddings(
             model="models/gemini-embedding-2-preview",
             google_api_key=settings.GOOGLE_API_KEY
         )
@@ -82,7 +82,7 @@ def embed_query(query: str) -> list[float]:
     return active_model.encode([query],show_progress_bar=False).tolist()[0]
 
 
-def embed_text(text: str) -> list[float]:
+def embed_texts(text: str) -> list[float]:
     init()
     all_embeddings: list[list[float]] = []
     for i in range(0, len(text), BATCH_SIZE):

@@ -30,4 +30,5 @@ def chunk_text(text:str, chunk_size:int=1500) -> List[str]:
             chunks.append(current_chunk.strip())
         chunks = [chunk for chunk in chunks if chunk.strip()]
         logfire.info(f"Text chunked into {len(chunks)} chunks.")
+        print(f"Text chunked into {len(chunks)} chunks.")
         return chunks

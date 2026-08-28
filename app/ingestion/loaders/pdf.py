@@ -22,6 +22,7 @@ def parse_pdf(file_path: str) -> str:
             # Fallback: OCR pages where no text was extracted
             if pages_needing_ocr:
                 logfire.warning(f"Pages needing OCR: {pages_needing_ocr}. Performing OCR on these pages.")
+                print(f"Pages needing OCR: {pages_needing_ocr}. Performing OCR on these pages.")
                 images = convert_from_path(file_path)
 
                 for page_num in pages_needing_ocr:
@@ -31,7 +32,9 @@ def parse_pdf(file_path: str) -> str:
                         text_parts.append(ocr_text)
 
             logfire.info(f"Text extracted from PDF: {file_path}")
+            print(f"Text extracted from PDF: {file_path}")
             return "\n".join(text_parts)
         except Exception as e:
             logfire.error(f"PDF parsing failed: {e}")
+            print(f"PDF parsing failed: {e}")
             return ""

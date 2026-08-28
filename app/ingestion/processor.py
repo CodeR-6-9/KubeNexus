@@ -15,12 +15,13 @@ from app.ingestion.loaders.text import parse_text
 from app.ingestion.chunking.splitter import chunk_text
 
 import logfire
+logfire.configure()
 
 PROCESSED_DATA_DIR = "processed_data"
 
 #Initialize Quadrant client
 qdrant_client = QdrantClient(
-    url=settings.QDRANT_URL,
+    url=settings.QDRANT_CLUSTER_ENDPOINT,
     api_key=settings.QDRANT_API_KEY
 )
 
@@ -32,6 +33,7 @@ def save_processed_locally(data: dict,source_type: str, filename: str) -> str:
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     logfire.info(f"Processed data saved locally at {filepath}.")
+    print(f"Processed data saved locally at {filepath}.")
     return filepath
 
 def process_file(file_path: str,filename: str ,source_type: str):
@@ -45,21 +47,24 @@ def process_file(file_path: str,filename: str ,source_type: str):
                 full_text = parse_html(file_path)
             elif ext == 'txt':
                 full_text = parse_text(file_path)
-            elif ext == 'docx':
+            elif ext == 'docx' or ext == 'doc' or ext == 'pptx' or ext == 'ppt' or ext == 'xlsx' or ext == 'xls':
                 from app.ingestion.loaders.office import parse_office
                 full_text = parse_office(file_path)
             else:
                 logfire.warning(f"Unsupported file type: {ext}. Skipping {filename}.")
+                print(f"Unsupported file type: {ext}. Skipping {filename}.")
                 return
 
             if not full_text or full_text.strip() == "":
                 logfire.warning(f"No text extracted from {filename}. Skipping.")
+                print(f"No text extracted from {filename}. Skipping.")
                 return
 
             #chunk text
             chunks = chunk_text(full_text)
             if not chunks:
                 logfire.warning(f"No chunks created from {filename}. Skipping.")
+                print(f"No chunks created from {filename}. Skipping.")
                 return
 
             # Save processed metadata locally
@@ -71,6 +76,7 @@ def process_file(file_path: str,filename: str ,source_type: str):
 
             local_path = save_processed_locally(processed_data, source_type, filename)
             logfire.info(f"Processed data for {filename} saved locally at {local_path}.")
+            print(f"Processed data for {filename} saved locally at {local_path}.")
 
             # Embed and index in Qdrant
             with logfire.span("Vectorizing & Indexing"):
@@ -81,7 +87,7 @@ def process_file(file_path: str,filename: str ,source_type: str):
                         vector=embedding,
                         payload={"text": chunk, "source": source_type, "source_type": source_type},
                     )
-                    for chunk, embedding in zip[tuple](chunks, embeddings)
+                    for chunk, embedding in zip(chunks, embeddings)
                 ]
 
                 qdrant_client.upsert(
@@ -91,12 +97,15 @@ def process_file(file_path: str,filename: str ,source_type: str):
                 logfire.info(f"Indexed {len(points)} chunks from {filename} into Qdrant collection '{settings.QDRANT_COLLECTION_NAME}'.")
         except Exception as e:
             logfire.error(f"Error processing {filename}: {e}")
+            print(f"Error processing {filename}: {e}")
+            raise
 
 def process_directory(directory_path: str, source_type: str):
     """Process all files in a directory."""
     with logfire.span("Scanning Directory", path=directory_path, source=source_type):
         files = [f for f in os.listdir(directory_path) if os.path.isfile(os.path.join(directory_path, f))]
         logfire.info(f"Found {len(files)} files in {directory_path}.")
+        print(f"Found {len(files)} files in {directory_path}.")
         for filename in files:
             process_file(os.path.join(directory_path, filename), filename, source_type)
 
@@ -110,24 +119,26 @@ def run_universal_ingestion(base_dir: str, explicit_source_type: str = None, wip
         # Wipe collection if requested
         if wipe:
             with logfire.span("Wiping Collection"):
-                if qdrant_client.collection_exists(settings.QDRANT_COLLECTION):
-                    qdrant_client.delete_collection(settings.QDRANT_COLLECTION)
-                    logfire.info(f"Collection '{settings.QDRANT_COLLECTION}' deleted.")
+                if qdrant_client.collection_exists(settings.QDRANT_COLLECTION_NAME):
+                    qdrant_client.delete_collection(settings.QDRANT_COLLECTION_NAME)
+                    logfire.info(f"Collection '{settings.QDRANT_COLLECTION_NAME}' deleted.")
+                    print(f"Collection '{settings.QDRANT_COLLECTION_NAME}' deleted.")
 
         # Recreate collection — dimension resolved at runtime after embedding model probe
-        if not qdrant_client.collection_exists(settings.QDRANT_COLLECTION):
+        if not qdrant_client.collection_exists(settings.QDRANT_COLLECTION_NAME):
             dim = get_embedding_dim()
             qdrant_client.create_collection(
-                collection_name=settings.QDRANT_COLLECTION,
+                collection_name=settings.QDRANT_COLLECTION_NAME,
                 vectors_config=models.VectorParams(
                     size=dim,
                     distance=models.Distance.COSINE,
                 ),
             )
             logfire.info(
-                f"Created collection '{settings.QDRANT_COLLECTION}' "
+                f"Created collection '{settings.QDRANT_COLLECTION_NAME}' "
                 f"({dim}-dim, Cosine)."
             )
+            print(f"Collection '{settings.QDRANT_COLLECTION_NAME}' created.")
 
         # Route to sub-folders or treat the whole dir as one source
         subdirs = [
@@ -146,6 +157,7 @@ def run_universal_ingestion(base_dir: str, explicit_source_type: str = None, wip
                     else "general"
                 )
             logfire.info(f"No sub-folders found — processing '{base_dir}' as '{source_type}'.")
+            print(f"No sub-folders found — processing '{base_dir}' as '{source_type}'.")
             process_directory(base_dir, source_type)
         else:
             for subdir in subdirs:
@@ -155,3 +167,20 @@ def run_universal_ingestion(base_dir: str, explicit_source_type: str = None, wip
                     else subdir
                 )
                 process_directory(os.path.join(base_dir, subdir), source_type)
+
+if __name__ == "__main__":
+    #   python -m app.ingestion.processor DATA --wipe
+    #   python -m app.ingestion.processor DATA/true_data true
+    wipe_requested = "--wipe" in sys.argv
+    clean_args = [a for a in sys.argv if a != "--wipe"]
+
+    target_dir = clean_args[1] if len(clean_args) > 1 else "DATA"
+    explicit_type = clean_args[2] if len(clean_args) > 2 else None
+
+    if not os.path.exists(target_dir):
+        print(f"Error: path '{target_dir}' does not exist.")
+        sys.exit(1)
+
+    run_universal_ingestion(target_dir, explicit_source_type=explicit_type, wipe=wipe_requested)
+    logfire.info("Ingestion job completed.")
+    print("Ingestion job completed.")

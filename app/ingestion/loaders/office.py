@@ -11,7 +11,9 @@ def parse_office(file_path: str) -> str:
                 return ""
 
             logfire.info(f"Text extracted from Office document: {file_path}")
+            print(f"Text extracted from Office document: {file_path}")
             return text
         except Exception as e:  
             logfire.error(f"Error extracting text from Office document: {e}")
+            print(f"Error extracting text from Office document: {e}")
             return ""
