@@ -11,5 +11,7 @@ class Settings:
     QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "kubenexus")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-
+    GROQ_SLUG = os.getenv("GROQ_SLUG")
+    GROQ_SLUG_2 = os.getenv("GROQ_SLUG_2")
+    PORTKEY_API_KEY= os.getenv("PORTKEY_API_KEY")
 settings = Settings()
