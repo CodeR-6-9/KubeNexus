@@ -1,63 +1,52 @@
 import logfire
 from langchain_groq import ChatGroq
-from nemoguardrails import RailsConfig, LLMRails
 
 from app.config import settings
-from app.guardrails.colang_rules import COLANG_CONTENT, YAML_CONTENT, RAIL_INDICATORS
+from app.guardrails.colang_rules import (
+    build_classification_prompt,
+    CATEGORY_RESPONSES,
+    VALID_CATEGORIES,
+)
 
-
-_rails: LLMRails | None = None
+_guard_llm: ChatGroq | None = None
 
 
 def initialize_rails() -> None:
-    """
-    Build the NeMo LLMRails singleton at app startup.
-    Uses llama-3.1-8b-instant for fast intent classification at the gate —
-    the heavier llama-3.3-70b-versatile is reserved for the RAG pipeline.
-    """
-    global _rails
-
-    guard_llm = ChatGroq(
+    """Build the guard-gate LLM singleton at app startup."""
+    global _guard_llm
+    _guard_llm = ChatGroq(
         api_key=settings.GROQ_API_KEY,
-        model="llama-3.1-8b-instant",
-        temperature=0
+        model="openai/gpt-oss-20b",
+        temperature=0,
     )
-
-    config = RailsConfig.from_content(
-        colang_content=COLANG_CONTENT,
-        yaml_content=YAML_CONTENT
-    )
-
-    _rails = LLMRails(config, llm=guard_llm)
-    logfire.info("NeMo Guardrails initialised (llama-3.1-8b-instant).")
-    
-    
+    logfire.info("Guardrail classifier initialised (model=openai/gpt-oss-20b).")
 
 
 def guard(message: str) -> tuple[bool, str | None]:
     """
-    Run a user message through the NeMo rails gate.
+    Run a user message through the structured classification gate.
 
     Returns:
-        (True,  rail_response) — a rail fired; return this response immediately,
-                                skip the RAG pipeline entirely.
-        (False, None)          — message is clean; proceed to LangGraph.
+        (True,  response) — message falls in a handled category
+                             (off_topic, jailbreak, greeting, capabilities,
+                             farewell); return this response, skip RAG.
+        (False, None)     — message is "clean"; proceed to LangGraph.
     """
-    if _rails is None:
-        logfire.warning("Guardrails not initialised — skipping gate.")
+    if _guard_llm is None:
+        logfire.warning("Guardrail classifier not initialised — skipping gate.")
         return False, None
 
     with logfire.span("Guardrails Check"):
-        result = _rails.generate(messages=[{"role": "user", "content": message}])
+        result = _guard_llm.invoke(build_classification_prompt(message))
+        category = result.content.strip().lower()
 
-        # NeMo returns {'role': 'assistant', 'content': '...'} — extract text
-        content = result.get("content", "") if isinstance(result, dict) else str(result)
+        if category not in VALID_CATEGORIES:
+            logfire.warning(f"Unrecognized category '{category}' from guard LLM — defaulting to clean.")
+            category = "clean"
 
-        fired = any(indicator in content for indicator in RAIL_INDICATORS)
+        if category == "clean":
+            logfire.info("Guardrails passed.")
+            return False, None
 
-        if fired:
-            logfire.info(f"Guardrails fired | query='{message[:80]}'")
-            return True, content
-
-        logfire.info("Guardrails passed.")
-        return False, None
+        logfire.info(f"Guardrails fired | category={category} | query='{message[:80]}'")
+        return True, CATEGORY_RESPONSES[category]

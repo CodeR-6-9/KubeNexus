@@ -59,18 +59,20 @@ def embed_batch(batch: list[str]) -> list[list[float]]:
             try:
                 return active_model.embed_documents(batch)
             except Exception as e:
-                err = str(e).lower()
-                is_rate_limit = any(x in err for x in ("429", "rate", "quota", "resource_exhausted"))
-                if is_rate_limit and attempt < 3:
-                    wait = 2 ** attempt
-                    logfire.warning(
-                        f"Gemini rate limit hit — retrying in {wait}s "
-                        f"(attempt {attempt + 1}/4)."
-                    )
-                    time.sleep(wait)
-                else:
-                    logfire.error(f"Gemini embedding failed: {e}")
-                    raise
+                # err = str(e).lower()
+                # is_rate_limit = any(x in err for x in ("429", "rate", "quota", "resource_exhausted"))
+                # if is_rate_limit and attempt < 3:
+                #     wait = 2 ** attempt
+                #     logfire.warning(
+                #         f"Gemini rate limit hit — retrying in {wait}s "
+                #         f"(attempt {attempt + 1}/4)."
+                #     )
+                #     time.sleep(wait)
+                # else:
+                #     logfire.error(f"Gemini embedding failed: {e}")
+                #     raise
+                logfire.error(f"Gemini embedding failed: {e}")
+                raise
         raise RuntimeError("Gemini failed to embed batch after 3 attempts")
     else:
         return active_model.encode(batch,show_progress_bar=False).tolist()

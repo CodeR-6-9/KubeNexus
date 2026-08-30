@@ -14,4 +14,5 @@ class Settings:
     GROQ_SLUG = os.getenv("GROQ_SLUG")
     GROQ_SLUG_2 = os.getenv("GROQ_SLUG_2")
     PORTKEY_API_KEY= os.getenv("PORTKEY_API_KEY")
+    PORTKEY_CONFIG_SLUG = os.getenv("PORTKEY_CONFIG_SLUG")
 settings = Settings()

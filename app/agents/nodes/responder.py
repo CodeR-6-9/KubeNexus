@@ -66,7 +66,8 @@ def generate_node(state: AgentState):
         try:
             response = portkey_client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1
+                temperature=0.1,
+                max_tokens=600
             )
             content = response.choices[0].message.content
             cache_status = extract_cache_status(response)
